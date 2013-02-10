@@ -1,13 +1,13 @@
 require 'download_strategy'
 require 'dependency_collector'
 require 'formula_support'
+require 'formula_lock'
 require 'hardware'
 require 'bottles'
 require 'patches'
 require 'compilers'
 require 'build_environment'
 require 'build_options'
-require 'extend/set'
 
 
 class Formula
@@ -40,6 +40,9 @@ class Formula
     # then a bottle is not available for the current platform.
     if @bottle and not (@bottle.checksum.nil? or @bottle.checksum.empty?)
       @bottle.url ||= bottle_base_url + bottle_filename(self)
+      if @bottle.cat_without_underscores
+        @bottle.url.gsub!(MacOS.cat.to_s, MacOS.cat_without_underscores.to_s)
+      end
     else
       @bottle = nil
     end
@@ -134,6 +137,9 @@ class Formula
   # generally we don't want var stuff inside the keg
   def var; HOMEBREW_PREFIX+'var' end
 
+  def bash_completion; prefix+'etc/bash_completion.d' end
+  def zsh_completion;  share+'zsh/site-functions'     end
+
   # override this to provide a plist
   def plist; nil; end
   alias :startup_plist :plist
@@ -157,6 +163,13 @@ class Formula
 
   def cached_download
     @downloader.cached_location
+  end
+
+  # Can be overridden to selectively disable bottles from formulae.
+  # Defaults to true so overridden version does not have to check if bottles
+  # are supported.
+  def pour_bottle?
+    true
   end
 
   # tell the user about any caveats regarding this package, return a string
@@ -229,19 +242,12 @@ class Formula
   end
 
   def lock
-    HOMEBREW_CACHE_FORMULA.mkpath
-    lockpath = HOMEBREW_CACHE_FORMULA/"#{@name}.brewing"
-    @lockfile = lockpath.open(File::RDWR | File::CREAT)
-    unless @lockfile.flock(File::LOCK_EX | File::LOCK_NB)
-      raise OperationInProgressError, @name
-    end
+    @lock = FormulaLock.new(name)
+    @lock.lock
   end
 
   def unlock
-    unless @lockfile.nil?
-      @lockfile.flock(File::LOCK_UN)
-      @lockfile.close
-    end
+    @lock.unlock unless @lock.nil?
   end
 
   def == b
@@ -369,7 +375,8 @@ class Formula
       install_type = :from_url
     elsif name.match bottle_regex
       bottle_filename = Pathname(name).realpath
-      name = bottle_filename.basename.to_s.rpartition('-').first
+      version = Version.parse(bottle_filename).to_s
+      name = bottle_filename.basename.to_s.rpartition("-#{version}").first
       path = Formula.path(name)
       install_type = :from_local_bottle
     else
@@ -419,6 +426,7 @@ class Formula
     end
 
     raise NameError if !klass.ancestors.include? Formula
+    raise NameError if klass == Formula
 
     return klass.new(name) if install_type == :from_name
     return klass.new(name, path.to_s)
@@ -463,10 +471,8 @@ class Formula
   end
 
   # The full set of Requirements for this formula's dependency tree.
-  def recursive_requirements
-    reqs = ComparableSet.new
-    recursive_dependencies.each { |d| reqs.merge d.to_formula.requirements }
-    reqs.merge requirements
+  def recursive_requirements(&block)
+    Requirement.expand(self, &block)
   end
 
   def to_hash
@@ -740,8 +746,8 @@ private
     end
 
     def depends_on dep
-      dependencies.add(dep)
-      post_depends_on
+      d = dependencies.add(dep)
+      post_depends_on(d) unless d.nil?
     end
 
     def option name, description=nil
@@ -806,14 +812,13 @@ private
 
     private
 
-    def post_depends_on
-      # Generate with- and without- options for optional and recommended deps
-      dependencies.deps.each do |dep|
-        if dep.optional? && !build.has_option?("with-#{dep.name}")
-          build.add("with-#{dep.name}", "Build with #{dep.name} support")
-        elsif dep.recommended? && !build.has_option?("without-#{dep.name}")
-          build.add("without-#{dep.name}", "Build without #{dep.name} support")
-        end
+    def post_depends_on(dep)
+      # Generate with- or without- options for optional and recommended
+      # dependencies and requirements
+      if dep.optional? && !build.has_option?("with-#{dep.name}")
+        build.add("with-#{dep.name}", "Build with #{dep.name} support")
+      elsif dep.recommended? && !build.has_option?("without-#{dep.name}")
+        build.add("without-#{dep.name}", "Build without #{dep.name} support")
       end
     end
   end

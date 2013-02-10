@@ -24,6 +24,11 @@ class DependencyCollectorTests < Test::Unit::TestCase
     assert_equal 2, @d.find_dependency('bar').tags.length
   end
 
+  def test_add_returns_created_dep
+    ret = @d.add 'foo'
+    assert_equal Dependency.new('foo'), ret
+  end
+
   def test_dependency_tags
     assert Dependency.new('foo', :build).build?
     assert Dependency.new('foo', [:build, :optional]).optional?
@@ -75,6 +80,16 @@ class DependencyCollectorTests < Test::Unit::TestCase
     dep = @d.find_requirement(X11Dependency)
     assert_equal '2.5.1', dep.min_version
     assert dep.optional?
+  end
+end
+
+class LanguageModuleDependencyTests < Test::Unit::TestCase
+  def test_unique_deps_are_not_eql
+    x = LanguageModuleDependency.new(:node, "less")
+    y = LanguageModuleDependency.new(:node, "coffee-script")
+    assert x.hash != y.hash
+    assert !x.eql?(y)
+    assert !y.eql?(x)
   end
 end
 

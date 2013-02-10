@@ -26,16 +26,23 @@ class DependencyCollector
     @requirements = ComparableSet.new
   end
 
-  def add spec
-    tag = nil
-    spec, tag = spec.shift if spec.is_a? Hash
+  def add(spec)
+    case dep = build(spec)
+    when Dependency
+      @deps << dep
+    when Requirement
+      @requirements << dep
+    end
+    dep
+  end
 
-    dep = parse_spec(spec, tag)
-    # Some symbol specs are conditional, and resolve to nil if there is no
-    # dependency needed for the current platform.
-    return if dep.nil?
-    # Add dep to the correct bucket
-    (dep.is_a?(Requirement) ? @requirements : @deps) << dep
+  def build(spec)
+    spec, tag = case spec
+                when Hash then spec.shift
+                else spec
+                end
+
+    parse_spec(spec, tag)
   end
 
 private
@@ -56,7 +63,7 @@ private
       spec
     when Class
       if spec < Requirement
-        spec.new
+        spec.new(tag)
       else
         raise "#{spec} is not a Requirement subclass"
       end
@@ -69,25 +76,23 @@ private
     case spec
     when :autoconf, :automake, :bsdmake, :libtool
       # Xcode no longer provides autotools or some other build tools
-      Dependency.new(spec.to_s, tag) unless MacOS::Xcode.provides_autotools?
-    when :libpng, :freetype, :pixman, :fontconfig, :cairo
+      Dependency.new(spec.to_s, [:build, *tag]) unless MacOS::Xcode.provides_autotools?
+    when *X11Dependency::Proxy::PACKAGES
       if MacOS.version >= :mountain_lion
         Dependency.new(spec.to_s, tag)
       else
-        X11Dependency.new(tag)
+        X11Dependency::Proxy.for(spec.to_s, tag)
       end
-    when :x11
-      X11Dependency.new(tag)
-    when :xcode
-      XcodeDependency.new(tag)
-    when :mysql
-      MysqlInstalled.new(tag)
-    when :postgresql
-      PostgresqlInstalled.new(tag)
-    when :tex
-      TeXInstalled.new(tag)
-    when :clt
-      CLTDependency.new(tag)
+    when :cairo, :pixman
+      # We no longer use X11 psuedo-deps for cairo or pixman,
+      # so just return a standard formula dependency.
+      Dependency.new(spec.to_s, tag)
+    when :x11        then X11Dependency.new(spec.to_s, tag)
+    when :xcode      then XcodeDependency.new(tag)
+    when :mysql      then MysqlInstalled.new(tag)
+    when :postgresql then PostgresqlInstalled.new(tag)
+    when :tex        then TeXInstalled.new(tag)
+    when :clt        then CLTDependency.new(tag)
     else
       raise "Unsupported special dependency #{spec}"
     end
